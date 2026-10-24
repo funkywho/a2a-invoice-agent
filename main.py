@@ -9,7 +9,10 @@ from fastapi import FastAPI, Request, Response, status
 
 app = FastAPI(title="A2A Invoice Agent")
 DB_FILE = "agent_state.db"
-BASE_URL = "https://hockey-driving-brighton-barn.trycloudflare.com/a2a/"
+
+# NOTE: Render dynamically sets host, but we advertise the base URL in the card
+# Automatically detect or specify the public base url
+RENDER_EXTERNAL_URL = "https://a2a-invoice-agent.onrender.com"  # Update with your exact Render service URL
 
 def a2a_response(content: Any, status_code: int = 200) -> Response:
     return Response(
@@ -72,7 +75,7 @@ def extract_principal(auth_header: Optional[str]) -> Optional[str]:
         return None
     return hashlib.sha256(token.encode('utf-8')).hexdigest()
 
-# --- Robust Invoice Analysis Engine ---
+# --- Semantic Decision Logic ---
 def decide_package_action(pkg: Dict[str, Any]) -> Dict[str, Any]:
     text_corpus = json.dumps(pkg)
     text_lower = text_corpus.lower()
@@ -99,7 +102,7 @@ def decide_package_action(pkg: Dict[str, Any]) -> Dict[str, Any]:
 
     decisive_refs = filtered_refs[:3]
 
-    # 2. Facts Extraction
+    # 2. Extract Facts
     vendor = (
         pkg.get("vendorName")
         or pkg.get("vendor")
@@ -129,7 +132,7 @@ def decide_package_action(pkg: Dict[str, Any]) -> Dict[str, Any]:
         "currency": str(curr)
     }
 
-    # 3. Deterministic Decision Gateways
+    # 3. Decision Gateways
     if any(k in text_lower for k in ["duplicate", "already paid", "previously settled", "double payment", "prior voucher"]):
         action = "reject_duplicate"
         rationale = f"Evaluated under anti-duplicate controls and determined action is {action}. Prior settlement records verified with decisive refs {decisive_refs[0]} and {decisive_refs[1]}."
@@ -158,7 +161,12 @@ def decide_package_action(pkg: Dict[str, Any]) -> Dict[str, Any]:
 
 # --- 1. Agent Card ---
 @app.get("/.well-known/agent-card.json")
-def get_agent_card():
+def get_agent_card(request: Request):
+    # Dynamically build base url from request host
+    host = request.headers.get("host", "localhost")
+    scheme = "https" if "render.com" in host or request.headers.get("x-forwarded-proto") == "https" else "http"
+    base_endpoint = f"{scheme}://{host}/a2a/"
+
     card = {
         "name": "Invoice Action Agent",
         "description": "Safe A2A invoice decision and receipt execution agent",
@@ -179,7 +187,7 @@ def get_agent_card():
             {
                 "protocolBinding": "HTTP+JSON",
                 "protocolVersion": "1.0",
-                "url": BASE_URL
+                "url": base_endpoint
             }
         ],
         "defaultInputModes": [
@@ -215,12 +223,12 @@ async def verify_a2a_protocol(request: Request, call_next):
     # 3. POST MEDIA TYPE CHECK
     if request.method == "POST":
         content_type = request.headers.get("Content-Type", "")
-        if "application/a2a+json" not in content_type and "application/json" not in content_type:
+        if "application/a2a+json" not in content_type:
             return error_response("UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/a2a+json", status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
 
     return await call_next(request)
 
-# --- 2. Message Send (Proposals & Continuations) ---
+# --- 2. Message Send (Supports both /a2a/message:send and /message:send) ---
 @app.post("/a2a/message:send")
 @app.post("/message:send")
 async def send_message(request: Request):
